@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: review-agent-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Add your remote DB credentials and AI API Keys here!
+      # e.g., POSTGRES_URL=postgresql://user:pass@db:5432/dbname
+      # By default it will fall back to local sqlite inside the container if unset.
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - XAI_API_KEY=${XAI_API_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-SUPER_SECRET_KEY_CHANGE_IN_PROD}
+    restart: unless-stopped
+    volumes:
+      # Mount data directory so sqlite DB and report exports survive container restarts
+      - backend_data:/app/data
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: review-agent-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # The frontend container dictates where the browser should look for the API.
+      # If you assign a domain (like api.mysecurityapp.com), put it here.
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend_data:

@@ -1,0 +1,116 @@
+{
+  "findings": [
+    {
+      "title": "Duplicate Code Pattern (Violation of DRY)",
+      "description": "Duplicate statement pattern detected at line 98 (previously seen at line 65). Extract duplicated logic into a shared helper method.",
+      "line_number": 98,
+      "severity": "low",
+      "category": "code_smell",
+      "agent_source": "code_analysis",
+      "id": "c37a8ff0-5811-4eb7-aa99-2bd1341a8470",
+      "remediation_summary": "Refactor code to resolve Duplicate Code Pattern (Violation of DRY) following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing Duplicate Code Pattern (Violation of DRY)\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    },
+    {
+      "title": "Cross-Site Scripting (XSS) via Unsanitized DOM Insertion",
+      "description": "Directly assigning user-controlled input to DOM elements without sanitization enables Cross-Site Scripting (XSS). Attackers can execute arbitrary JavaScript in victim browsers. Use proper input sanitization or safe text rendering.",
+      "line_number": 137,
+      "severity": "high",
+      "category": "xss",
+      "cwe_id": "CWE-79",
+      "owasp_category": "A03:2021-Injection",
+      "agent_source": "security_vulnerability",
+      "id": "63f2f8bb-55af-49dc-968a-f0e3adcca316",
+      "remediation_summary": "Refactor code to resolve Cross-Site Scripting (XSS) via Unsanitized DOM Insertion following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing Cross-Site Scripting (XSS) via Unsanitized DOM Insertion\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    },
+    {
+      "title": "High Cyclomatic Complexity & Long Method",
+      "description": "The method 'perform_static_security_scan' spans 30 lines. Long methods violate Single Responsibility Principle (SRP). Refactor into smaller helper functions.",
+      "line_number": 143,
+      "severity": "medium",
+      "category": "complexity",
+      "agent_source": "code_analysis",
+      "id": "0a4b72ca-740f-42d9-bbab-9315f3237b7d",
+      "remediation_summary": "Refactor code to resolve High Cyclomatic Complexity & Long Method following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing High Cyclomatic Complexity & Long Method\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    },
+    {
+      "title": "High Cyclomatic Complexity & Long Method",
+      "description": "The method 'scan_security_vulnerabilities' spans 24 lines. Long methods violate Single Responsibility Principle. Refactor into smaller helper functions.",
+      "line_number": 185,
+      "severity": "medium",
+      "category": "complexity",
+      "agent_source": "code_analysis",
+      "id": "c709f614-e8dc-446d-a31e-faa339198129",
+      "remediation_summary": "Refactor code to resolve High Cyclomatic Complexity & Long Method following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing High Cyclomatic Complexity & Long Method\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    },
+    {
+      "title": "Duplicate Code Pattern (Violation of DRY)",
+      "description": "Duplicate statement pattern detected at line 189 (previously seen at line 183). Extract duplicated logic into a shared helper method.",
+      "line_number": 189,
+      "severity": "low",
+      "category": "code_smell",
+      "agent_source": "code_analysis",
+      "id": "fd87cc1c-30ff-488c-a053-039f14807648",
+      "remediation_summary": "Refactor code to resolve Duplicate Code Pattern (Violation of DRY) following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing Duplicate Code Pattern (Violation of DRY)\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    }
+  ],
+  "remediation": {
+    "rescan_passed": false,
+    "remediation_status": "partial",
+    "security_remediation_required": true,
+    "remediation_error": "1 security vulnerability(ies) remain unresolved.",
+    "original_findings_count": 5,
+    "rescan_findings_count": 1,
+    "fixed_findings_count": 4,
+    "fixed_findings": [],
+    "remaining_findings": [
+      {
+        "title": "Cross-Site Scripting (XSS) via Unsanitized DOM Insertion",
+        "description": "Directly assigning user-controlled input to DOM elements without sanitization enables Cross-Site Scripting (XSS). Attackers can execute arbitrary JavaScript in victim browsers. Use proper input sanitization or safe text rendering.",
+        "line_number": 137,
+        "severity": "high",
+        "category": "xss",
+        "cwe_id": "CWE-79",
+        "owasp_category": "A03:2021-Injection"
+      },
+      {
+        "title": "High Cyclomatic Complexity & Long Method",
+        "description": "The method 'perform_static_security_scan' spans 30 lines. Long methods violate Single Responsibility Principle (SRP). Refactor into smaller helper functions.",
+        "line_number": 143,
+        "severity": "medium",
+        "category": "complexity"
+      },
+      {
+        "title": "High Cyclomatic Complexity & Long Method",
+        "description": "The method 'scan_security_vulnerabilities' spans 24 lines. Long methods violate Single Responsibility Principle. Refactor into smaller helper functions.",
+        "line_number": 185,
+        "severity": "medium",
+        "category": "complexity"
+      },
+      {
+        "title": "Duplicate Code Pattern (Violation of DRY)",
+        "description": "Duplicate statement pattern detected at line 98 (previously seen at line 65). Extract duplicated logic into a shared helper method.",
+        "line_number": 98,
+        "severity": "low",
+        "category": "code_smell"
+      },
+      {
+        "title": "Duplicate Code Pattern (Violation of DRY)",
+        "description": "Duplicate statement pattern detected at line 189 (previously seen at line 183). Extract duplicated logic into a shared helper method.",
+        "line_number": 189,
+        "severity": "low",
+        "category": "code_smell"
+      }
+    ],
+    "attempts": 3
+  }
+}

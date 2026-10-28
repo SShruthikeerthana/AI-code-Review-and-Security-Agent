@@ -1,0 +1,1498 @@
+Total Submissions Found: 5
+
+==========================================
+SUBMISSION #1 (ID: bd8396c5-b408-406b-af27-b3ebe718a8dc)
+Language: python | Status: completed | Health: 55
+--- ORIGINAL SOURCE CODE ---
+import os
+import re
+from typing import List, Optional
+import google.generativeai as genai
+from pydantic import BaseModel, Field
+
+from app.config import settings
+
+class SecurityVulnerabilityFinding(BaseModel):
+    title: str = Field(description="Short title summarizing the security vulnerability")
+    description: str = Field(description="Detailed explanation of the vulnerability and its security implications")
+    line_number: Optional[int] = Field(description="The 1-based line number where the vulnerability is located, or null if it applies globally")
+    severity: str = Field(description="Severity: info, low, medium, high, or critical")
+    category: str = Field(description="Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other")
+    cwe_id: Optional[str] = Field(description="CWE identifier, e.g., CWE-89, CWE-79, CWE-798, CWE-22, etc.")
+    owasp_category: Optional[str] = Field(description="OWASP Top 10 category, e.g., A03:2021-Injection, A01:2021-Broken Access Control, etc.")
+
+class SecurityVulnerabilityResult(BaseModel):
+    findings: List[SecurityVulnerabilityFinding]
+
+SYSTEM_PROMPT = """
+You are an expert Security Vulnerability Agent. Your task is to perform static security analysis on the provided source code to identify security vulnerabilities. Specifically scan for OWASP Top 10 standards:
+1. SQL Injection: Raw SQL concatenation using user inputs.
+2. Cross-Site Scripting (XSS): Direct injection of user-inputted parameters into client views without sanitization.
+3. CSRF: Missing protection on state-changing actions.
+4. Hardcoded Secrets: Hardcoded API keys, JWT secrets, passwords, or cloud credentials.
+5. Insecure Authentication: Plaintext password storage, weak hashing algorithms, or insecure session tokens.
+6. Broken Access Controls: Lack of authorization checks, IDOR (Insecure Direct Object References), or privilege escalation vectors.
+7. Command Injection & Insecure Deserialization: Unvalidated inputs passed to OS shells or unserialized dynamically.
+8. Path Traversal: Processing file paths from user inputs without directory validation.
+
+For each security issue found, classify it with:
+- Title: Short name of the vulnerability.
+- Description: Explanation of the vulnerability and potential security implications.
+- Line number: The exact 1-based line number where the vulnerability is located, or null if it is global.
+- Severity: low, medium, high, or critical.
+- Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other.
+- CWE ID: The corresponding CWE ID (e.g., CWE-89, CWE-79, CWE-798).
+- OWASP Category: The corresponding OWASP category (e.g., A03:2021-Injection, A01:2021-Broken Access Control).
+
+Be highly precise. Do not hallucinate. Only return findings that are present in the submitted code.
+"""
+
+# Security Vulnerability Rule Patterns for Dynamic Static Analysis
+SECURITY_RULES = [
+    {
+        "id": "SECRETS_HARDCODED",
+        "category": "secrets",
+        "severity": "critical",
+        "cwe_id": "CWE-798",
+        "owasp_category": "A07:2021-Identification and Authentication Failures",
+        "title": "Use of Hardcoded API Secret Key or Credentials",
+        "description": "Hardcoded API secret keys or credentials were detected. Hardcoded credentials can be easily extracted from code repositories, leading to unauthorized access. Move credentials to environment variables or a secure key management system.",
+        "patterns": [
+            r"(?i)(api_secret_key|api_key|secret_key|auth_token|access_token|private_key|jwt_secret)\s*[:=]\s*[\"'][^\"']{4,}[\"']",
+            r"(?i)[\"'](xoxb-[a-zA-Z0-9_-]+|sk-[a-zA-Z0-9]{15,}|AKIA[0-9A-Z]{16})[\"']",
+            r"(?i)password\s*[:=]\s*[\"'][^\"']+[\"']",
+        ]
+    },
+    {
+        "id": "SQL_INJECTION",
+        "category": "sql_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-89",
+        "owasp_category": "A03:2021-Injection",
+        "title": "SQL Injection via String Concatenation",
+        "description": "Direct concatenation or formatting of user-provided inputs into SQL query strings enables SQL Injection (SQLi) attacks. An attacker can manipulate the query structure to bypass authorization, leak data, or modify database contents. Use parameterized queries or prepared statements.",
+        "patterns": [
+            r"(?i)(select|insert|update|delete|drop|alter)\s+.*?\s+(from|into|where|set|table)\s+.*?(?:\+|%|f[\"']|\$\{)",
+            r"(?i)(query|sql|stmt)\s*=\s*f[\"'].*?(select|insert|update|delete).*?\{.*?\}[\"']",
+            r"(?i)(query|sql)\s*=\s*[\"'].*?(select|insert|update|delete).*?[\"']\s*\+",
+            r"(?i)execute\(\s*f[\"'].*?[\"']\)",
+            r"(?i)execute\(\s*[\"'].*?[\"']\s*\+",
+            r"(?i)executeQuery\(\s*query\s*\)",
+        ]
+    },
+    {
+        "id": "AUTH_WEAK_HASH",
+        "category": "auth_flaw",
+        "severity": "high",
+        "cwe_id": "CWE-328",
+        "owasp_category": "A02:2021-Cryptographic Failures",
+        "title": "Insecure Cryptographic Hash (MD5/SHA1)",
+        "description": "The MD5 or SHA-1 hashing algorithm is cryptographically broken and prone to collision attacks. It must not be used for security-sensitive hashing or password storage. Use strong adaptive hashing algorithms like bcrypt, Argon2, or PBKDF2.",
+        "patterns": [
+            r"(?i)hashlib\.md5\(",
+            r"(?i)hashlib\.sha1\(",
+            r"(?i)MessageDigest\.getInstance\([\"']MD5[\"']\)",
+            r"(?i)MessageDigest\.getInstance\([\"']SHA-1[\"']\)",
+            r"(?i)CryptoJS\.MD5\(",
+        ]
+    },
+    {
+        "id": "COMMAND_INJECTION",
+        "category": "command_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-78",
+        "owasp_category": "A03:2021-Injection",
+        "title": "OS Command Injection or Unsafe Execution",
+        "description": "Executing command strings constructed with raw concatenation of user-supplied arguments enables OS Command Injection or arbitrary code execution. Attackers can execute arbitrary operating system commands. Use native safe APIs instead.",
+        "patterns": [
+            r"(?i)Runtime\.getRuntime\(\)\.exec\(",
+            r"(?i)os\.system\(",
+            r"(?i)subprocess\.call\(",
+            r"(?i)subprocess\.Popen\(",
+            r"(?i)shell_exec\(",
+            r"(?i)eval\(",
+            r"(?i)exec\(",
+        ]
+    },
+    {
+        "id": "PATH_TRAVERSAL",
+        "category": "path_traversal",
+        "severity": "high",
+        "cwe_id": "CWE-22",
+        "owasp_category": "A01:2021-Broken Access Control",
+        "title": "Potential Path Traversal in File Operations",
+        "description": "Constructing file paths directly from user inputs without validation can lead to path traversal vulnerabilities. Attackers may manipulate path sequences (e.g., '../') to access restricted files. Validate and sanitize file paths before use.",
+        "patterns": [
+            r"(?i)open\(\s*f[\"'].*?\{.*?\}[\"']",
+            r"(?i)new\s+FileInputStream\(\s*.*?\+\s*.*?\)",
+            r"(?i)new\s+File\(\s*.*?\+\s*.*?\)",
+            r"(?i)\.\./\.\.",
+        ]
+    },
+    {
+        "id": "XSS_DOM_INJECTION",
+        "category": "xss",
+        "severity": "high",
+        "cwe_id": "CWE-79",
+        "owasp_category": "A03:2021-Injection",
+        "title": "Cross-Site Scripting (XSS) via Unsanitized DOM Insertion",
+        "description": "Directly assigning user-controlled input to DOM elements without sanitization enables Cross-Site Scripting (XSS). Attackers can execute arbitrary JavaScript in victim browsers. Use proper input sanitization or safe text rendering.",
+        "patterns": [
+            r"(?i)\.innerHTML\s*=",
+            r"(?i)document\.write\(",
+            r"(?i)dangerouslySetInnerHTML",
+            r"(?i)v-html\s*=",
+        ]
+    }
+]
+
+def perform_static_security_scan(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamically analyzes any provided source code line-by-line using rule-based patterns
+    to detect real OWASP Top 10 vulnerabilities with exact 1-based line numbers.
+    """
+    findings = []
+    seen_lines_and_categories = set()
+
+    lines = source_code.split("\n")
+    for line_idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        # Skip pure comment lines
+        if line.startswith("#") or line.startswith("//") or line.startswith("/*") or line.startswith("*"):
+            continue
+
+        for rule in SECURITY_RULES:
+            key = (line_idx, rule["category"])
+            if key in seen_lines_and_categories:
+                continue
+
+            for pattern in rule["patterns"]:
+                if re.search(pattern, raw_line):
+                    findings.append({
+                        "title": rule["title"],
+                        "description": rule["description"],
+                        "line_number": line_idx,
+                        "severity": rule["severity"],
+                        "category": rule["category"],
+                        "cwe_id": rule["cwe_id"],
+                        "owasp_category": rule["owasp_category"]
+                    })
+                    seen_lines_and_categories.add(key)
+                    break
+
+    return findings
+
+def get_mock_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamic fallback for security vulnerability scanning when LLM API key is not configured.
+    """
+    return perform_static_security_scan(source_code, language)
+
+def scan_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    api_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("INFO: GEMINI_API_KEY not set. Using dynamic static security vulnerability analysis engine.")
+        return perform_static_security_scan(source_code, language)
+
+    try:
+        genai.configure(api_key=api_key)
+        
+        model = genai.GenerativeModel(
+            model_name=settings.llm_model,
+            system_instruction=SYSTEM_PROMPT
+        )
+        
+        prompt = f"Analyze the following {language} code for security vulnerabilities:\n\n{source_code}"
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=SecurityVulnerabilityResult
+            )
+        )
+        
+        # Parse output
+        result = SecurityVulnerabilityResult.model_validate_json(response.text)
+        return [finding.model_dump() for finding in result.findings]
+    except Exception as e:
+        print(f"WARNING: LLM security scan failed or unconfigured ({e}). Falling back to dynamic static security scanner.")
+        return perform_static_security_scan(source_code, language)
+
+
+--- REMEDIATED CODE ---
+import os
+import re
+from typing import List, Optional
+import google.generativeai as genai
+from pydantic import BaseModel, Field
+
+from app.config import settings
+
+class SecurityVulnerabilityFinding(BaseModel):
+    title: str = Field(description="Short title summarizing the security vulnerability")
+    description: str = Field(description="Detailed explanation of the vulnerability and its security implications")
+    line_number: Optional[int] = Field(description="The 1-based line number where the vulnerability is located, or null if it applies globally")
+    severity: str = Field(description="Severity: info, low, medium, high, or critical")
+    category: str = Field(description="Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other")
+    cwe_id: Optional[str] = Field(description="CWE identifier, e.g., CWE-89, CWE-79, CWE-798, CWE-22, etc.")
+    owasp_category: Optional[str] = Field(description="OWASP Top 10 category, e.g., A03:2021-Injection, A01:2021-Broken Access Control, etc.")
+
+class SecurityVulnerabilityResult(BaseModel):
+    findings: List[SecurityVulnerabilityFinding]
+
+SYSTEM_PROMPT = """
+You are an expert Security Vulnerability Agent. Your task is to perform static security analysis on the provided source code to identify security vulnerabilities. Specifically scan for OWASP Top 10 standards:
+1. SQL Injection: Raw SQL concatenation using user inputs.
+2. Cross-Site Scripting (XSS): Direct injection of user-inputted parameters into client views without sanitization.
+3. CSRF: Missing protection on state-changing actions.
+4. Hardcoded Secrets: Hardcoded API keys, JWT secrets, passwords, or cloud credentials.
+5. Insecure Authentication: Plaintext password storage, weak hashing algorithms, or insecure session tokens.
+6. Broken Access Controls: Lack of authorization checks, IDOR (Insecure Direct Object References), or privilege escalation vectors.
+7. Command Injection & Insecure Deserialization: Unvalidated inputs passed to OS shells or unserialized dynamically.
+8. Path Traversal: Processing file paths from user inputs without directory validation.
+
+For each security issue found, classify it with:
+- Title: Short name of the vulnerability.
+- Description: Explanation of the vulnerability and potential security implications.
+- Line number: The exact 1-based line number where the vulnerability is located, or null if it is global.
+- Severity: low, medium, high, or critical.
+- Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other.
+- CWE ID: The corresponding CWE ID (e.g., CWE-89, CWE-79, CWE-798).
+- OWASP Category: The corresponding OWASP category (e.g., A03:2021-Injection, A01:2021-Broken Access Control).
+
+Be highly precise. Do not hallucinate. Only return findings that are present in the submitted code.
+"""
+
+# Security Vulnerability Rule Patterns for Dynamic Static Analysis
+SECURITY_RULES = [
+    {
+        "id": "SECRETS_HARDCODED",
+        "category": "secrets",
+        "severity": "critical",
+        "cwe_id": "CWE-798",
+        "owasp_category": "A07:2021-Identification and Authentication Failures",
+        "title": "Use of Hardcoded API Secret Key or Credentials",
+        "description": "Hardcoded API secret keys or credentials were detected. Hardcoded credentials can be easily extracted from code repositories, leading to unauthorized access. Move credentials to environment variables or a secure key management system.",
+        "patterns": [
+            r"(?i)(api_secret_key|api_key|secret_key|auth_token|access_token|private_key|jwt_secret)\s*[:=]\s*[\"'][^\"']{4,}[\"']",
+            r"(?i)[\"'](xoxb-[a-zA-Z0-9_-]+|sk-[a-zA-Z0-9]{15,}|AKIA[0-9A-Z]{16})[\"']",
+            r"(?i)password\s*[:=]\s*[\"'][^\"']+[\"']",
+        ]
+    },
+    {
+        "id": "SQL_INJECTION",
+        "category": "sql_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-89",
+        "owasp_category": "A03:2021-Injection",
+        "title": "SQL Injection via String Concatenation",
+        "description": "Direct concatenation or formatting of user-provided inputs into SQL query strings enables SQL Injection (SQLi) attacks. An attacker can manipulate the query structure to bypass authorization, leak data, or modify database contents. Use parameterized queries or prepared statements.",
+        "patterns": [
+            r"(?i)(select|insert|update|delete|drop|alter)\s+.*?\s+(from|into|where|set|table)\s+.*?(?:\+|%|f[\"']|\$\{)",
+            r"(?i)(query|sql|stmt)\s*=\s*f[\"'].*?(select|insert|update|delete).*?\{.*?\}[\"']",
+            r"(?i)(query|sql)\s*=\s*[\"'].*?(select|insert|update|delete).*?[\"']\s*\+",
+            r"(?i)execute\(\s*f[\"'].*?[\"']\)",
+            r"(?i)execute\(\s*[\"'].*?[\"']\s*\+",
+            r"(?i)executeQuery\(\s*query\s*\)",
+        ]
+    },
+    {
+        "id": "AUTH_WEAK_HASH",
+        "category": "auth_flaw",
+        "severity": "high",
+        "cwe_id": "CWE-328",
+        "owasp_category": "A02:2021-Cryptographic Failures",
+        "title": "Insecure Cryptographic Hash (MD5/SHA1)",
+        "description": "The MD5 or SHA-1 hashing algorithm is cryptographically broken and prone to collision attacks. It must not be used for security-sensitive hashing or password storage. Use strong adaptive hashing algorithms like bcrypt, Argon2, or PBKDF2.",
+        "patterns": [
+            r"(?i)hashlib\.md5\(",
+            r"(?i)hashlib\.sha1\(",
+            r"(?i)MessageDigest\.getInstance\([\"']MD5[\"']\)",
+            r"(?i)MessageDigest\.getInstance\([\"']SHA-1[\"']\)",
+            r"(?i)CryptoJS\.MD5\(",
+        ]
+    },
+    {
+        "id": "COMMAND_INJECTION",
+        "category": "command_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-78",
+        "owasp_category": "A03:2021-Injection",
+        "title": "OS Command Injection or Unsafe Execution",
+        "description": "Executing command strings constructed with raw concatenation of user-supplied arguments enables OS Command Injection or arbitrary code execution. Attackers can execute arbitrary operating system commands. Use native safe APIs instead.",
+        "patterns": [
+            r"(?i)Runtime\.getRuntime\(\)\.exec\(",
+            r"(?i)os\.system\(",
+            r"(?i)subprocess\.call\(",
+            r"(?i)subprocess\.Popen\(",
+            r"(?i)shell_exec\(",
+            r"(?i)eval\(",
+            r"(?i)exec\(",
+        ]
+    },
+    {
+        "id": "PATH_TRAVERSAL",
+        "category": "path_traversal",
+        "severity": "high",
+        "cwe_id": "CWE-22",
+        "owasp_category": "A01:2021-Broken Access Control",
+        "title": "Potential Path Traversal in File Operations",
+        "description": "Constructing file paths directly from user inputs without validation can lead to path traversal vulnerabilities. Attackers may manipulate path sequences (e.g., '../') to access restricted files. Validate and sanitize file paths before use.",
+        "patterns": [
+            r"(?i)open\(\s*f[\"'].*?\{.*?\}[\"']",
+            r"(?i)new\s+FileInputStream\(\s*.*?\+\s*.*?\)",
+            r"(?i)new\s+File\(\s*.*?\+\s*.*?\)",
+            r"(?i)\.\./\.\.",
+        ]
+    },
+    {
+        "id": "XSS_DOM_INJECTION",
+        "category": "xss",
+        "severity": "high",
+        "cwe_id": "CWE-79",
+        "owasp_category": "A03:2021-Injection",
+        "title": "Cross-Site Scripting (XSS) via Unsanitized DOM Insertion",
+        "description": "Directly assigning user-controlled input to DOM elements without sanitization enables Cross-Site Scripting (XSS). Attackers can execute arbitrary JavaScript in victim browsers. Use proper input sanitization or safe text rendering.",
+        "patterns": [
+            r"(?i)\.innerHTML\s*=",
+            r"(?i)document\.write\(",
+            r"(?i)dangerouslySetInnerHTML",
+            r"(?i)v-html\s*=",
+        ]
+    }
+]
+
+def perform_static_security_scan(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamically analyzes any provided source code line-by-line using rule-based patterns
+    to detect real OWASP Top 10 vulnerabilities with exact 1-based line numbers.
+    """
+    findings = []
+    seen_lines_and_categories = set()
+
+    lines = source_code.split("\n")
+    for line_idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        # Skip pure comment lines
+        if line.startswith("#") or line.startswith("//") or line.startswith("/*") or line.startswith("*"):
+            continue
+
+        for rule in SECURITY_RULES:
+            key = (line_idx, rule["category"])
+            if key in seen_lines_and_categories:
+                continue
+
+            for pattern in rule["patterns"]:
+                if re.search(pattern, raw_line):
+                    findings.append({
+                        "title": rule["title"],
+                        "description": rule["description"],
+                        "line_number": line_idx,
+                        "severity": rule["severity"],
+                        "category": rule["category"],
+                        "cwe_id": rule["cwe_id"],
+                        "owasp_category": rule["owasp_category"]
+                    })
+                    seen_lines_and_categories.add(key)
+                    break
+
+    return findings
+
+def get_mock_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamic fallback for security vulnerability scanning when LLM API key is not configured.
+    """
+    return perform_static_security_scan(source_code, language)
+
+def scan_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    api_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("INFO: GEMINI_API_KEY not set. Using dynamic static security vulnerability analysis engine.")
+        return perform_static_security_scan(source_code, language)
+
+    try:
+        genai.configure(api_key=api_key)
+        
+        model = genai.GenerativeModel(
+            model_name=settings.llm_model,
+            system_instruction=SYSTEM_PROMPT
+        )
+        
+        prompt = f"Analyze the following {language} code for security vulnerabilities:\n\n{source_code}"
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=SecurityVulnerabilityResult
+            )
+        )
+        
+        # Parse output
+        result = SecurityVulnerabilityResult.model_validate_json(response.text)
+        return [finding.model_dump() for finding in result.findings]
+    except Exception as e:
+        print(f"WARNING: LLM security scan failed or unconfigured ({e}). Falling back to dynamic static security scanner.")
+        return perform_static_security_scan(source_code, language)
+
+
+
+==========================================
+SUBMISSION #2 (ID: 945674c9-e39c-47dc-a6cc-269f3c32a54f)
+Language: python | Status: completed | Health: 60
+--- ORIGINAL SOURCE CODE ---
+import bcrypt
+import sqlite3
+import hashlib
+import os
+
+# 1. HARDCODED SECRET (Critical - OWASP A07:2021 / CWE-798)
+# Refactored: Secret retrieved from environment variable
+API_SECRET_KEY = os.environ.get('API_SECRET_KEY', 'SECURE_ENV_VAR')
+DATABASE_URL = "sqlite:///app.db"
+
+class UserService:
+
+    # 2. INSECURE MD5 HASHING (High - OWASP A02:2021 / CWE-328)
+    def hash_user_password(self, password):
+        # Refactored: Secure BCrypt password hashing (replaces insecure MD5/SHA1)
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12)).decode('utf-8')
+
+    # 3. SQL INJECTION (Critical - OWASP A03:2021 / CWE-89)
+    def get_user_by_name(self, username):
+        conn = sqlite3.connect("app.db")
+        cursor = conn.cursor()
+        # Refactored: Parameterized SQL query (prevents SQL Injection)
+        query = "SELECT * FROM users WHERE username = %s"
+        cursor.execute(query, (username,))
+        return cursor.fetchone()
+
+    # 4. OS COMMAND INJECTION (Critical - OWASP A03:2021 / CWE-78)
+    def ping_user_server(self, server_ip):
+        # Refactored: Safe subprocess invocation (prevents Command Injection)
+        import subprocess
+        subprocess.run(["ping", "-c", "1", server_ip], check=True)
+
+    # 5. HIGH CYCLOMATIC COMPLEXITY & DEEP NESTING (Medium - Code Smell / Arrow Anti-Pattern)
+    def process_user_data(self, user_id, raw_data):
+        if user_id is not None:
+            if raw_data is not None:
+                if len(raw_data) > 0:
+                    if "email" in raw_data:
+                        if raw_data["email"].endswith("@company.com"):
+                            if "backup_email" in raw_data:
+                                if raw_data["backup_email"].endswith("@company.com"):
+                                    return True
+        return False
+
+--- REMEDIATED CODE ---
+import bcrypt
+import sqlite3
+import hashlib
+import os
+
+# 1. HARDCODED SECRET (Critical - OWASP A07:2021 / CWE-798)
+# Refactored: Secret retrieved from environment variable
+API_SECRET_KEY = os.environ.get('API_SECRET_KEY', 'SECURE_ENV_VAR')
+DATABASE_URL = "sqlite:///app.db"
+
+class UserService:
+
+    # 2. INSECURE MD5 HASHING (High - OWASP A02:2021 / CWE-328)
+    def hash_user_password(self, password):
+        # Refactored: Secure BCrypt password hashing (replaces insecure MD5/SHA1)
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12)).decode('utf-8')
+
+    # 3. SQL INJECTION (Critical - OWASP A03:2021 / CWE-89)
+    def get_user_by_name(self, username):
+        conn = sqlite3.connect("app.db")
+        cursor = conn.cursor()
+        # Refactored: Parameterized SQL query (prevents SQL Injection)
+        # Refactored: Parameterized SQL query (prevents SQL Injection)
+        query = "SELECT * FROM users WHERE username = %s"
+        cursor.execute(query, (username,))
+        return cursor.fetchone()
+
+    # 4. OS COMMAND INJECTION (Critical - OWASP A03:2021 / CWE-78)
+    def ping_user_server(self, server_ip):
+        # Refactored: Safe subprocess invocation (prevents Command Injection)
+        import subprocess
+        subprocess.run(["ping", "-c", "1", server_ip], check=True)
+
+    # 5. HIGH CYCLOMATIC COMPLEXITY & DEEP NESTING (Medium - Code Smell / Arrow Anti-Pattern)
+    def process_user_data(self, user_id, raw_data):
+        if user_id is not None:
+            if raw_data is not None:
+                if len(raw_data) > 0:
+                    if "email" in raw_data:
+                        if raw_data["email"].endswith("@company.com"):
+                            if "backup_email" in raw_data:
+                                if raw_data["backup_email"].endswith("@company.com"):
+                                    return True
+        return False
+
+
+==========================================
+SUBMISSION #3 (ID: ebc45654-1c62-4f29-b629-5f3bc39a89bf)
+Language: python | Status: completed | Health: 0
+--- ORIGINAL SOURCE CODE ---
+import sqlite3
+import hashlib
+import os
+
+# 1. HARDCODED SECRET (Critical - OWASP A07:2021 / CWE-798)
+API_SECRET_KEY = "sk-proj-secret-api-key-9988776655"
+DATABASE_URL = "sqlite:///app.db"
+
+class UserService:
+
+    # 2. INSECURE MD5 HASHING (High - OWASP A02:2021 / CWE-328)
+    def hash_user_password(self, password):
+        return hashlib.md5(password.encode()).hexdigest()
+
+    # 3. SQL INJECTION (Critical - OWASP A03:2021 / CWE-89)
+    def get_user_by_name(self, username):
+        conn = sqlite3.connect("app.db")
+        cursor = conn.cursor()
+        query = "SELECT * FROM users WHERE username = '" + username + "'"
+        cursor.execute(query)
+        return cursor.fetchone()
+
+    # 4. OS COMMAND INJECTION (Critical - OWASP A03:2021 / CWE-78)
+    def ping_user_server(self, server_ip):
+        os.system("ping -c 1 " + server_ip)
+
+    # 5. HIGH CYCLOMATIC COMPLEXITY & DEEP NESTING (Medium - Code Smell / Arrow Anti-Pattern)
+    def process_user_data(self, user_id, raw_data):
+        if user_id is not None:
+            if raw_data is not None:
+                if len(raw_data) > 0:
+                    if "email" in raw_data:
+                        if raw_data["email"].endswith("@company.com"):
+                            if "backup_email" in raw_data:
+                                if raw_data["backup_email"].endswith("@company.com"):
+                                    return True
+        return False
+
+--- REMEDIATED CODE ---
+import bcrypt
+import sqlite3
+import hashlib
+import os
+
+# 1. HARDCODED SECRET (Critical - OWASP A07:2021 / CWE-798)
+# Refactored: Secret retrieved from environment variable
+API_SECRET_KEY = os.environ.get('API_SECRET_KEY', 'SECURE_ENV_VAR')
+DATABASE_URL = "sqlite:///app.db"
+
+class UserService:
+
+    # 2. INSECURE MD5 HASHING (High - OWASP A02:2021 / CWE-328)
+    def hash_user_password(self, password):
+        # Refactored: Secure BCrypt password hashing (replaces insecure MD5/SHA1)
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12)).decode('utf-8')
+
+    # 3. SQL INJECTION (Critical - OWASP A03:2021 / CWE-89)
+    def get_user_by_name(self, username):
+        conn = sqlite3.connect("app.db")
+        cursor = conn.cursor()
+        # Refactored: Parameterized SQL query (prevents SQL Injection)
+        query = "SELECT * FROM users WHERE username = %s"
+        cursor.execute(query, (username,))
+        return cursor.fetchone()
+
+    # 4. OS COMMAND INJECTION (Critical - OWASP A03:2021 / CWE-78)
+    def ping_user_server(self, server_ip):
+        # Refactored: Safe subprocess invocation (prevents Command Injection)
+        import subprocess
+        subprocess.run(["ping", "-c", "1", server_ip], check=True)
+
+    # 5. HIGH CYCLOMATIC COMPLEXITY & DEEP NESTING (Medium - Code Smell / Arrow Anti-Pattern)
+    def process_user_data(self, user_id, raw_data):
+        if user_id is not None:
+            if raw_data is not None:
+                if len(raw_data) > 0:
+                    if "email" in raw_data:
+                        if raw_data["email"].endswith("@company.com"):
+                            if "backup_email" in raw_data:
+                                if raw_data["backup_email"].endswith("@company.com"):
+                                    return True
+        return False
+
+
+==========================================
+SUBMISSION #4 (ID: 46bd892d-d767-4924-bcee-18dcb9e41db3)
+Language: python | Status: completed | Health: 55
+--- ORIGINAL SOURCE CODE ---
+import os
+import re
+from typing import List, Optional
+import google.generativeai as genai
+from pydantic import BaseModel, Field
+
+from app.config import settings
+
+class SecurityVulnerabilityFinding(BaseModel):
+    title: str = Field(description="Short title summarizing the security vulnerability")
+    description: str = Field(description="Detailed explanation of the vulnerability and its security implications")
+    line_number: Optional[int] = Field(description="The 1-based line number where the vulnerability is located, or null if it applies globally")
+    severity: str = Field(description="Severity: info, low, medium, high, or critical")
+    category: str = Field(description="Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other")
+    cwe_id: Optional[str] = Field(description="CWE identifier, e.g., CWE-89, CWE-79, CWE-798, CWE-22, etc.")
+    owasp_category: Optional[str] = Field(description="OWASP Top 10 category, e.g., A03:2021-Injection, A01:2021-Broken Access Control, etc.")
+
+class SecurityVulnerabilityResult(BaseModel):
+    findings: List[SecurityVulnerabilityFinding]
+
+SYSTEM_PROMPT = """
+You are an expert Security Vulnerability Agent. Your task is to perform static security analysis on the provided source code to identify security vulnerabilities. Specifically scan for OWASP Top 10 standards:
+1. SQL Injection: Raw SQL concatenation using user inputs.
+2. Cross-Site Scripting (XSS): Direct injection of user-inputted parameters into client views without sanitization.
+3. CSRF: Missing protection on state-changing actions.
+4. Hardcoded Secrets: Hardcoded API keys, JWT secrets, passwords, or cloud credentials.
+5. Insecure Authentication: Plaintext password storage, weak hashing algorithms, or insecure session tokens.
+6. Broken Access Controls: Lack of authorization checks, IDOR (Insecure Direct Object References), or privilege escalation vectors.
+7. Command Injection & Insecure Deserialization: Unvalidated inputs passed to OS shells or unserialized dynamically.
+8. Path Traversal: Processing file paths from user inputs without directory validation.
+
+For each security issue found, classify it with:
+- Title: Short name of the vulnerability.
+- Description: Explanation of the vulnerability and potential security implications.
+- Line number: The exact 1-based line number where the vulnerability is located, or null if it is global.
+- Severity: low, medium, high, or critical.
+- Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other.
+- CWE ID: The corresponding CWE ID (e.g., CWE-89, CWE-79, CWE-798).
+- OWASP Category: The corresponding OWASP category (e.g., A03:2021-Injection, A01:2021-Broken Access Control).
+
+Be highly precise. Do not hallucinate. Only return findings that are present in the submitted code.
+"""
+
+# Security Vulnerability Rule Patterns for Dynamic Static Analysis
+SECURITY_RULES = [
+    {
+        "id": "SECRETS_HARDCODED",
+        "category": "secrets",
+        "severity": "critical",
+        "cwe_id": "CWE-798",
+        "owasp_category": "A07:2021-Identification and Authentication Failures",
+        "title": "Use of Hardcoded API Secret Key or Credentials",
+        "description": "Hardcoded API secret keys or credentials were detected. Hardcoded credentials can be easily extracted from code repositories, leading to unauthorized access. Move credentials to environment variables or a secure key management system.",
+        "patterns": [
+            r"(?i)(api_secret_key|api_key|secret_key|auth_token|access_token|private_key|jwt_secret)\s*[:=]\s*[\"'][^\"']{4,}[\"']",
+            r"(?i)[\"'](xoxb-[a-zA-Z0-9_-]+|sk-[a-zA-Z0-9]{15,}|AKIA[0-9A-Z]{16})[\"']",
+            r"(?i)password\s*[:=]\s*[\"'][^\"']+[\"']",
+        ]
+    },
+    {
+        "id": "SQL_INJECTION",
+        "category": "sql_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-89",
+        "owasp_category": "A03:2021-Injection",
+        "title": "SQL Injection via String Concatenation",
+        "description": "Direct concatenation or formatting of user-provided inputs into SQL query strings enables SQL Injection (SQLi) attacks. An attacker can manipulate the query structure to bypass authorization, leak data, or modify database contents. Use parameterized queries or prepared statements.",
+        "patterns": [
+            r"(?i)(select|insert|update|delete|drop|alter)\s+.*?\s+(from|into|where|set|table)\s+.*?(?:\+|%|f[\"']|\$\{)",
+            r"(?i)(query|sql|stmt)\s*=\s*f[\"'].*?(select|insert|update|delete).*?\{.*?\}[\"']",
+            r"(?i)(query|sql)\s*=\s*[\"'].*?(select|insert|update|delete).*?[\"']\s*\+",
+            r"(?i)execute\(\s*f[\"'].*?[\"']\)",
+            r"(?i)execute\(\s*[\"'].*?[\"']\s*\+",
+            r"(?i)executeQuery\(\s*query\s*\)",
+        ]
+    },
+    {
+        "id": "AUTH_WEAK_HASH",
+        "category": "auth_flaw",
+        "severity": "high",
+        "cwe_id": "CWE-328",
+        "owasp_category": "A02:2021-Cryptographic Failures",
+        "title": "Insecure Cryptographic Hash (MD5/SHA1)",
+        "description": "The MD5 or SHA-1 hashing algorithm is cryptographically broken and prone to collision attacks. It must not be used for security-sensitive hashing or password storage. Use strong adaptive hashing algorithms like bcrypt, Argon2, or PBKDF2.",
+        "patterns": [
+            r"(?i)hashlib\.md5\(",
+            r"(?i)hashlib\.sha1\(",
+            r"(?i)MessageDigest\.getInstance\([\"']MD5[\"']\)",
+            r"(?i)MessageDigest\.getInstance\([\"']SHA-1[\"']\)",
+            r"(?i)CryptoJS\.MD5\(",
+        ]
+    },
+    {
+        "id": "COMMAND_INJECTION",
+        "category": "command_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-78",
+        "owasp_category": "A03:2021-Injection",
+        "title": "OS Command Injection or Unsafe Execution",
+        "description": "Executing command strings constructed with raw concatenation of user-supplied arguments enables OS Command Injection or arbitrary code execution. Attackers can execute arbitrary operating system commands. Use native safe APIs instead.",
+        "patterns": [
+            r"(?i)Runtime\.getRuntime\(\)\.exec\(",
+            r"(?i)os\.system\(",
+            r"(?i)subprocess\.call\(",
+            r"(?i)subprocess\.Popen\(",
+            r"(?i)shell_exec\(",
+            r"(?i)eval\(",
+            r"(?i)exec\(",
+        ]
+    },
+    {
+        "id": "PATH_TRAVERSAL",
+        "category": "path_traversal",
+        "severity": "high",
+        "cwe_id": "CWE-22",
+        "owasp_category": "A01:2021-Broken Access Control",
+        "title": "Potential Path Traversal in File Operations",
+        "description": "Constructing file paths directly from user inputs without validation can lead to path traversal vulnerabilities. Attackers may manipulate path sequences (e.g., '../') to access restricted files. Validate and sanitize file paths before use.",
+        "patterns": [
+            r"(?i)open\(\s*f[\"'].*?\{.*?\}[\"']",
+            r"(?i)new\s+FileInputStream\(\s*.*?\+\s*.*?\)",
+            r"(?i)new\s+File\(\s*.*?\+\s*.*?\)",
+            r"(?i)\.\./\.\.",
+        ]
+    },
+    {
+        "id": "XSS_DOM_INJECTION",
+        "category": "xss",
+        "severity": "high",
+        "cwe_id": "CWE-79",
+        "owasp_category": "A03:2021-Injection",
+        "title": "Cross-Site Scripting (XSS) via Unsanitized DOM Insertion",
+        "description": "Directly assigning user-controlled input to DOM elements without sanitization enables Cross-Site Scripting (XSS). Attackers can execute arbitrary JavaScript in victim browsers. Use proper input sanitization or safe text rendering.",
+        "patterns": [
+            r"(?i)\.innerHTML\s*=",
+            r"(?i)document\.write\(",
+            r"(?i)dangerouslySetInnerHTML",
+            r"(?i)v-html\s*=",
+        ]
+    }
+]
+
+def perform_static_security_scan(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamically analyzes any provided source code line-by-line using rule-based patterns
+    to detect real OWASP Top 10 vulnerabilities with exact 1-based line numbers.
+    """
+    findings = []
+    seen_lines_and_categories = set()
+
+    lines = source_code.split("\n")
+    for line_idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        # Skip pure comment lines
+        if line.startswith("#") or line.startswith("//") or line.startswith("/*") or line.startswith("*"):
+            continue
+
+        for rule in SECURITY_RULES:
+            key = (line_idx, rule["category"])
+            if key in seen_lines_and_categories:
+                continue
+
+            for pattern in rule["patterns"]:
+                if re.search(pattern, raw_line):
+                    findings.append({
+                        "title": rule["title"],
+                        "description": rule["description"],
+                        "line_number": line_idx,
+                        "severity": rule["severity"],
+                        "category": rule["category"],
+                        "cwe_id": rule["cwe_id"],
+                        "owasp_category": rule["owasp_category"]
+                    })
+                    seen_lines_and_categories.add(key)
+                    break
+
+    return findings
+
+def get_mock_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamic fallback for security vulnerability scanning when LLM API key is not configured.
+    """
+    return perform_static_security_scan(source_code, language)
+
+def scan_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    api_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("INFO: GEMINI_API_KEY not set. Using dynamic static security vulnerability analysis engine.")
+        return perform_static_security_scan(source_code, language)
+
+    try:
+        genai.configure(api_key=api_key)
+        
+        model = genai.GenerativeModel(
+            model_name=settings.llm_model,
+            system_instruction=SYSTEM_PROMPT
+        )
+        
+        prompt = f"Analyze the following {language} code for security vulnerabilities:\n\n{source_code}"
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=SecurityVulnerabilityResult
+            )
+        )
+        
+        # Parse output
+        result = SecurityVulnerabilityResult.model_validate_json(response.text)
+        return [finding.model_dump() for finding in result.findings]
+    except Exception as e:
+        print(f"WARNING: LLM security scan failed or unconfigured ({e}). Falling back to dynamic static security scanner.")
+        return perform_static_security_scan(source_code, language)
+
+
+--- REMEDIATED CODE ---
+import os
+import re
+from typing import List, Optional
+import google.generativeai as genai
+from pydantic import BaseModel, Field
+
+from app.config import settings
+
+class SecurityVulnerabilityFinding(BaseModel):
+    title: str = Field(description="Short title summarizing the security vulnerability")
+    description: str = Field(description="Detailed explanation of the vulnerability and its security implications")
+    line_number: Optional[int] = Field(description="The 1-based line number where the vulnerability is located, or null if it applies globally")
+    severity: str = Field(description="Severity: info, low, medium, high, or critical")
+    category: str = Field(description="Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other")
+    cwe_id: Optional[str] = Field(description="CWE identifier, e.g., CWE-89, CWE-79, CWE-798, CWE-22, etc.")
+    owasp_category: Optional[str] = Field(description="OWASP Top 10 category, e.g., A03:2021-Injection, A01:2021-Broken Access Control, etc.")
+
+class SecurityVulnerabilityResult(BaseModel):
+    findings: List[SecurityVulnerabilityFinding]
+
+SYSTEM_PROMPT = """
+You are an expert Security Vulnerability Agent. Your task is to perform static security analysis on the provided source code to identify security vulnerabilities. Specifically scan for OWASP Top 10 standards:
+1. SQL Injection: Raw SQL concatenation using user inputs.
+2. Cross-Site Scripting (XSS): Direct injection of user-inputted parameters into client views without sanitization.
+3. CSRF: Missing protection on state-changing actions.
+4. Hardcoded Secrets: Hardcoded API keys, JWT secrets, passwords, or cloud credentials.
+5. Insecure Authentication: Plaintext password storage, weak hashing algorithms, or insecure session tokens.
+6. Broken Access Controls: Lack of authorization checks, IDOR (Insecure Direct Object References), or privilege escalation vectors.
+7. Command Injection & Insecure Deserialization: Unvalidated inputs passed to OS shells or unserialized dynamically.
+8. Path Traversal: Processing file paths from user inputs without directory validation.
+
+For each security issue found, classify it with:
+- Title: Short name of the vulnerability.
+- Description: Explanation of the vulnerability and potential security implications.
+- Line number: The exact 1-based line number where the vulnerability is located, or null if it is global.
+- Severity: low, medium, high, or critical.
+- Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other.
+- CWE ID: The corresponding CWE ID (e.g., CWE-89, CWE-79, CWE-798).
+- OWASP Category: The corresponding OWASP category (e.g., A03:2021-Injection, A01:2021-Broken Access Control).
+
+Be highly precise. Do not hallucinate. Only return findings that are present in the submitted code.
+"""
+
+# Security Vulnerability Rule Patterns for Dynamic Static Analysis
+SECURITY_RULES = [
+    {
+        "id": "SECRETS_HARDCODED",
+        "category": "secrets",
+        "severity": "critical",
+        "cwe_id": "CWE-798",
+        "owasp_category": "A07:2021-Identification and Authentication Failures",
+        "title": "Use of Hardcoded API Secret Key or Credentials",
+        "description": "Hardcoded API secret keys or credentials were detected. Hardcoded credentials can be easily extracted from code repositories, leading to unauthorized access. Move credentials to environment variables or a secure key management system.",
+        "patterns": [
+            r"(?i)(api_secret_key|api_key|secret_key|auth_token|access_token|private_key|jwt_secret)\s*[:=]\s*[\"'][^\"']{4,}[\"']",
+            r"(?i)[\"'](xoxb-[a-zA-Z0-9_-]+|sk-[a-zA-Z0-9]{15,}|AKIA[0-9A-Z]{16})[\"']",
+            r"(?i)password\s*[:=]\s*[\"'][^\"']+[\"']",
+        ]
+    },
+    {
+        "id": "SQL_INJECTION",
+        "category": "sql_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-89",
+        "owasp_category": "A03:2021-Injection",
+        "title": "SQL Injection via String Concatenation",
+        "description": "Direct concatenation or formatting of user-provided inputs into SQL query strings enables SQL Injection (SQLi) attacks. An attacker can manipulate the query structure to bypass authorization, leak data, or modify database contents. Use parameterized queries or prepared statements.",
+        "patterns": [
+            r"(?i)(select|insert|update|delete|drop|alter)\s+.*?\s+(from|into|where|set|table)\s+.*?(?:\+|%|f[\"']|\$\{)",
+            r"(?i)(query|sql|stmt)\s*=\s*f[\"'].*?(select|insert|update|delete).*?\{.*?\}[\"']",
+            r"(?i)(query|sql)\s*=\s*[\"'].*?(select|insert|update|delete).*?[\"']\s*\+",
+            r"(?i)execute\(\s*f[\"'].*?[\"']\)",
+            r"(?i)execute\(\s*[\"'].*?[\"']\s*\+",
+            r"(?i)executeQuery\(\s*query\s*\)",
+        ]
+    },
+    {
+        "id": "AUTH_WEAK_HASH",
+        "category": "auth_flaw",
+        "severity": "high",
+        "cwe_id": "CWE-328",
+        "owasp_category": "A02:2021-Cryptographic Failures",
+        "title": "Insecure Cryptographic Hash (MD5/SHA1)",
+        "description": "The MD5 or SHA-1 hashing algorithm is cryptographically broken and prone to collision attacks. It must not be used for security-sensitive hashing or password storage. Use strong adaptive hashing algorithms like bcrypt, Argon2, or PBKDF2.",
+        "patterns": [
+            r"(?i)hashlib\.md5\(",
+            r"(?i)hashlib\.sha1\(",
+            r"(?i)MessageDigest\.getInstance\([\"']MD5[\"']\)",
+            r"(?i)MessageDigest\.getInstance\([\"']SHA-1[\"']\)",
+            r"(?i)CryptoJS\.MD5\(",
+        ]
+    },
+    {
+        "id": "COMMAND_INJECTION",
+        "category": "command_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-78",
+        "owasp_category": "A03:2021-Injection",
+        "title": "OS Command Injection or Unsafe Execution",
+        "description": "Executing command strings constructed with raw concatenation of user-supplied arguments enables OS Command Injection or arbitrary code execution. Attackers can execute arbitrary operating system commands. Use native safe APIs instead.",
+        "patterns": [
+            r"(?i)Runtime\.getRuntime\(\)\.exec\(",
+            r"(?i)os\.system\(",
+            r"(?i)subprocess\.call\(",
+            r"(?i)subprocess\.Popen\(",
+            r"(?i)shell_exec\(",
+            r"(?i)eval\(",
+            r"(?i)exec\(",
+        ]
+    },
+    {
+        "id": "PATH_TRAVERSAL",
+        "category": "path_traversal",
+        "severity": "high",
+        "cwe_id": "CWE-22",
+        "owasp_category": "A01:2021-Broken Access Control",
+        "title": "Potential Path Traversal in File Operations",
+        "description": "Constructing file paths directly from user inputs without validation can lead to path traversal vulnerabilities. Attackers may manipulate path sequences (e.g., '../') to access restricted files. Validate and sanitize file paths before use.",
+        "patterns": [
+            r"(?i)open\(\s*f[\"'].*?\{.*?\}[\"']",
+            r"(?i)new\s+FileInputStream\(\s*.*?\+\s*.*?\)",
+            r"(?i)new\s+File\(\s*.*?\+\s*.*?\)",
+            r"(?i)\.\./\.\.",
+        ]
+    },
+    {
+        "id": "XSS_DOM_INJECTION",
+        "category": "xss",
+        "severity": "high",
+        "cwe_id": "CWE-79",
+        "owasp_category": "A03:2021-Injection",
+        "title": "Cross-Site Scripting (XSS) via Unsanitized DOM Insertion",
+        "description": "Directly assigning user-controlled input to DOM elements without sanitization enables Cross-Site Scripting (XSS). Attackers can execute arbitrary JavaScript in victim browsers. Use proper input sanitization or safe text rendering.",
+        "patterns": [
+            r"(?i)\.innerHTML\s*=",
+            r"(?i)document\.write\(",
+            r"(?i)dangerouslySetInnerHTML",
+            r"(?i)v-html\s*=",
+        ]
+    }
+]
+
+def perform_static_security_scan(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamically analyzes any provided source code line-by-line using rule-based patterns
+    to detect real OWASP Top 10 vulnerabilities with exact 1-based line numbers.
+    """
+    findings = []
+    seen_lines_and_categories = set()
+
+    lines = source_code.split("\n")
+    for line_idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        # Skip pure comment lines
+        if line.startswith("#") or line.startswith("//") or line.startswith("/*") or line.startswith("*"):
+            continue
+
+        for rule in SECURITY_RULES:
+            key = (line_idx, rule["category"])
+            if key in seen_lines_and_categories:
+                continue
+
+            for pattern in rule["patterns"]:
+                if re.search(pattern, raw_line):
+                    findings.append({
+                        "title": rule["title"],
+                        "description": rule["description"],
+                        "line_number": line_idx,
+                        "severity": rule["severity"],
+                        "category": rule["category"],
+                        "cwe_id": rule["cwe_id"],
+                        "owasp_category": rule["owasp_category"]
+                    })
+                    seen_lines_and_categories.add(key)
+                    break
+
+    return findings
+
+def get_mock_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamic fallback for security vulnerability scanning when LLM API key is not configured.
+    """
+    return perform_static_security_scan(source_code, language)
+
+def scan_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    api_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("INFO: GEMINI_API_KEY not set. Using dynamic static security vulnerability analysis engine.")
+        return perform_static_security_scan(source_code, language)
+
+    try:
+        genai.configure(api_key=api_key)
+        
+        model = genai.GenerativeModel(
+            model_name=settings.llm_model,
+            system_instruction=SYSTEM_PROMPT
+        )
+        
+        prompt = f"Analyze the following {language} code for security vulnerabilities:\n\n{source_code}"
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=SecurityVulnerabilityResult
+            )
+        )
+        
+        # Parse output
+        result = SecurityVulnerabilityResult.model_validate_json(response.text)
+        return [finding.model_dump() for finding in result.findings]
+    except Exception as e:
+        print(f"WARNING: LLM security scan failed or unconfigured ({e}). Falling back to dynamic static security scanner.")
+        return perform_static_security_scan(source_code, language)
+
+
+
+==========================================
+SUBMISSION #5 (ID: c320d6ad-7d73-46d8-b45d-e750a88a4fef)
+Language: python | Status: completed | Health: 55
+--- ORIGINAL SOURCE CODE ---
+import os
+import re
+from typing import List, Optional
+import google.generativeai as genai
+from pydantic import BaseModel, Field
+
+from app.config import settings
+
+class SecurityVulnerabilityFinding(BaseModel):
+    title: str = Field(description="Short title summarizing the security vulnerability")
+    description: str = Field(description="Detailed explanation of the vulnerability and its security implications")
+    line_number: Optional[int] = Field(description="The 1-based line number where the vulnerability is located, or null if it applies globally")
+    severity: str = Field(description="Severity: info, low, medium, high, or critical")
+    category: str = Field(description="Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other")
+    cwe_id: Optional[str] = Field(description="CWE identifier, e.g., CWE-89, CWE-79, CWE-798, CWE-22, etc.")
+    owasp_category: Optional[str] = Field(description="OWASP Top 10 category, e.g., A03:2021-Injection, A01:2021-Broken Access Control, etc.")
+
+class SecurityVulnerabilityResult(BaseModel):
+    findings: List[SecurityVulnerabilityFinding]
+
+SYSTEM_PROMPT = """
+You are an expert Security Vulnerability Agent. Your task is to perform static security analysis on the provided source code to identify security vulnerabilities. Specifically scan for OWASP Top 10 standards:
+1. SQL Injection: Raw SQL concatenation using user inputs.
+2. Cross-Site Scripting (XSS): Direct injection of user-inputted parameters into client views without sanitization.
+3. CSRF: Missing protection on state-changing actions.
+4. Hardcoded Secrets: Hardcoded API keys, JWT secrets, passwords, or cloud credentials.
+5. Insecure Authentication: Plaintext password storage, weak hashing algorithms, or insecure session tokens.
+6. Broken Access Controls: Lack of authorization checks, IDOR (Insecure Direct Object References), or privilege escalation vectors.
+7. Command Injection & Insecure Deserialization: Unvalidated inputs passed to OS shells or unserialized dynamically.
+8. Path Traversal: Processing file paths from user inputs without directory validation.
+
+For each security issue found, classify it with:
+- Title: Short name of the vulnerability.
+- Description: Explanation of the vulnerability and potential security implications.
+- Line number: The exact 1-based line number where the vulnerability is located, or null if it is global.
+- Severity: low, medium, high, or critical.
+- Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other.
+- CWE ID: The corresponding CWE ID (e.g., CWE-89, CWE-79, CWE-798).
+- OWASP Category: The corresponding OWASP category (e.g., A03:2021-Injection, A01:2021-Broken Access Control).
+
+Be highly precise. Do not hallucinate. Only return findings that are present in the submitted code.
+"""
+
+# Security Vulnerability Rule Patterns for Dynamic Static Analysis
+SECURITY_RULES = [
+    {
+        "id": "SECRETS_HARDCODED",
+        "category": "secrets",
+        "severity": "critical",
+        "cwe_id": "CWE-798",
+        "owasp_category": "A07:2021-Identification and Authentication Failures",
+        "title": "Use of Hardcoded API Secret Key or Credentials",
+        "description": "Hardcoded API secret keys or credentials were detected. Hardcoded credentials can be easily extracted from code repositories, leading to unauthorized access. Move credentials to environment variables or a secure key management system.",
+        "patterns": [
+            r"(?i)(api_secret_key|api_key|secret_key|auth_token|access_token|private_key|jwt_secret)\s*[:=]\s*[\"'][^\"']{4,}[\"']",
+            r"(?i)[\"'](xoxb-[a-zA-Z0-9_-]+|sk-[a-zA-Z0-9]{15,}|AKIA[0-9A-Z]{16})[\"']",
+            r"(?i)password\s*[:=]\s*[\"'][^\"']+[\"']",
+        ]
+    },
+    {
+        "id": "SQL_INJECTION",
+        "category": "sql_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-89",
+        "owasp_category": "A03:2021-Injection",
+        "title": "SQL Injection via String Concatenation",
+        "description": "Direct concatenation or formatting of user-provided inputs into SQL query strings enables SQL Injection (SQLi) attacks. An attacker can manipulate the query structure to bypass authorization, leak data, or modify database contents. Use parameterized queries or prepared statements.",
+        "patterns": [
+            r"(?i)(select|insert|update|delete|drop|alter)\s+.*?\s+(from|into|where|set|table)\s+.*?(?:\+|%|f[\"']|\$\{)",
+            r"(?i)(query|sql|stmt)\s*=\s*f[\"'].*?(select|insert|update|delete).*?\{.*?\}[\"']",
+            r"(?i)(query|sql)\s*=\s*[\"'].*?(select|insert|update|delete).*?[\"']\s*\+",
+            r"(?i)execute\(\s*f[\"'].*?[\"']\)",
+            r"(?i)execute\(\s*[\"'].*?[\"']\s*\+",
+            r"(?i)executeQuery\(\s*query\s*\)",
+        ]
+    },
+    {
+        "id": "AUTH_WEAK_HASH",
+        "category": "auth_flaw",
+        "severity": "high",
+        "cwe_id": "CWE-328",
+        "owasp_category": "A02:2021-Cryptographic Failures",
+        "title": "Insecure Cryptographic Hash (MD5/SHA1)",
+        "description": "The MD5 or SHA-1 hashing algorithm is cryptographically broken and prone to collision attacks. It must not be used for security-sensitive hashing or password storage. Use strong adaptive hashing algorithms like bcrypt, Argon2, or PBKDF2.",
+        "patterns": [
+            r"(?i)hashlib\.md5\(",
+            r"(?i)hashlib\.sha1\(",
+            r"(?i)MessageDigest\.getInstance\([\"']MD5[\"']\)",
+            r"(?i)MessageDigest\.getInstance\([\"']SHA-1[\"']\)",
+            r"(?i)CryptoJS\.MD5\(",
+        ]
+    },
+    {
+        "id": "COMMAND_INJECTION",
+        "category": "command_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-78",
+        "owasp_category": "A03:2021-Injection",
+        "title": "OS Command Injection or Unsafe Execution",
+        "description": "Executing command strings constructed with raw concatenation of user-supplied arguments enables OS Command Injection or arbitrary code execution. Attackers can execute arbitrary operating system commands. Use native safe APIs instead.",
+        "patterns": [
+            r"(?i)Runtime\.getRuntime\(\)\.exec\(",
+            r"(?i)os\.system\(",
+            r"(?i)subprocess\.call\(",
+            r"(?i)subprocess\.Popen\(",
+            r"(?i)shell_exec\(",
+            r"(?i)eval\(",
+            r"(?i)exec\(",
+        ]
+    },
+    {
+        "id": "PATH_TRAVERSAL",
+        "category": "path_traversal",
+        "severity": "high",
+        "cwe_id": "CWE-22",
+        "owasp_category": "A01:2021-Broken Access Control",
+        "title": "Potential Path Traversal in File Operations",
+        "description": "Constructing file paths directly from user inputs without validation can lead to path traversal vulnerabilities. Attackers may manipulate path sequences (e.g., '../') to access restricted files. Validate and sanitize file paths before use.",
+        "patterns": [
+            r"(?i)open\(\s*f[\"'].*?\{.*?\}[\"']",
+            r"(?i)new\s+FileInputStream\(\s*.*?\+\s*.*?\)",
+            r"(?i)new\s+File\(\s*.*?\+\s*.*?\)",
+            r"(?i)\.\./\.\.",
+        ]
+    },
+    {
+        "id": "XSS_DOM_INJECTION",
+        "category": "xss",
+        "severity": "high",
+        "cwe_id": "CWE-79",
+        "owasp_category": "A03:2021-Injection",
+        "title": "Cross-Site Scripting (XSS) via Unsanitized DOM Insertion",
+        "description": "Directly assigning user-controlled input to DOM elements without sanitization enables Cross-Site Scripting (XSS). Attackers can execute arbitrary JavaScript in victim browsers. Use proper input sanitization or safe text rendering.",
+        "patterns": [
+            r"(?i)\.innerHTML\s*=",
+            r"(?i)document\.write\(",
+            r"(?i)dangerouslySetInnerHTML",
+            r"(?i)v-html\s*=",
+        ]
+    }
+]
+
+def perform_static_security_scan(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamically analyzes any provided source code line-by-line using rule-based patterns
+    to detect real OWASP Top 10 vulnerabilities with exact 1-based line numbers.
+    """
+    findings = []
+    seen_lines_and_categories = set()
+
+    lines = source_code.split("\n")
+    for line_idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        # Skip pure comment lines
+        if line.startswith("#") or line.startswith("//") or line.startswith("/*") or line.startswith("*"):
+            continue
+
+        for rule in SECURITY_RULES:
+            key = (line_idx, rule["category"])
+            if key in seen_lines_and_categories:
+                continue
+
+            for pattern in rule["patterns"]:
+                if re.search(pattern, raw_line):
+                    findings.append({
+                        "title": rule["title"],
+                        "description": rule["description"],
+                        "line_number": line_idx,
+                        "severity": rule["severity"],
+                        "category": rule["category"],
+                        "cwe_id": rule["cwe_id"],
+                        "owasp_category": rule["owasp_category"]
+                    })
+                    seen_lines_and_categories.add(key)
+                    break
+
+    return findings
+
+def get_mock_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamic fallback for security vulnerability scanning when LLM API key is not configured.
+    """
+    return perform_static_security_scan(source_code, language)
+
+def scan_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    api_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("INFO: GEMINI_API_KEY not set. Using dynamic static security vulnerability analysis engine.")
+        return perform_static_security_scan(source_code, language)
+
+    try:
+        genai.configure(api_key=api_key)
+        
+        model = genai.GenerativeModel(
+            model_name=settings.llm_model,
+            system_instruction=SYSTEM_PROMPT
+        )
+        
+        prompt = f"Analyze the following {language} code for security vulnerabilities:\n\n{source_code}"
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=SecurityVulnerabilityResult
+            )
+        )
+        
+        # Parse output
+        result = SecurityVulnerabilityResult.model_validate_json(response.text)
+        return [finding.model_dump() for finding in result.findings]
+    except Exception as e:
+        print(f"WARNING: LLM security scan failed or unconfigured ({e}). Falling back to dynamic static security scanner.")
+        return perform_static_security_scan(source_code, language)
+
+
+--- REMEDIATED CODE ---
+import os
+import re
+from typing import List, Optional
+import google.generativeai as genai
+from pydantic import BaseModel, Field
+
+from app.config import settings
+
+class SecurityVulnerabilityFinding(BaseModel):
+    title: str = Field(description="Short title summarizing the security vulnerability")
+    description: str = Field(description="Detailed explanation of the vulnerability and its security implications")
+    line_number: Optional[int] = Field(description="The 1-based line number where the vulnerability is located, or null if it applies globally")
+    severity: str = Field(description="Severity: info, low, medium, high, or critical")
+    category: str = Field(description="Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other")
+    cwe_id: Optional[str] = Field(description="CWE identifier, e.g., CWE-89, CWE-79, CWE-798, CWE-22, etc.")
+    owasp_category: Optional[str] = Field(description="OWASP Top 10 category, e.g., A03:2021-Injection, A01:2021-Broken Access Control, etc.")
+
+class SecurityVulnerabilityResult(BaseModel):
+    findings: List[SecurityVulnerabilityFinding]
+
+SYSTEM_PROMPT = """
+You are an expert Security Vulnerability Agent. Your task is to perform static security analysis on the provided source code to identify security vulnerabilities. Specifically scan for OWASP Top 10 standards:
+1. SQL Injection: Raw SQL concatenation using user inputs.
+2. Cross-Site Scripting (XSS): Direct injection of user-inputted parameters into client views without sanitization.
+3. CSRF: Missing protection on state-changing actions.
+4. Hardcoded Secrets: Hardcoded API keys, JWT secrets, passwords, or cloud credentials.
+5. Insecure Authentication: Plaintext password storage, weak hashing algorithms, or insecure session tokens.
+6. Broken Access Controls: Lack of authorization checks, IDOR (Insecure Direct Object References), or privilege escalation vectors.
+7. Command Injection & Insecure Deserialization: Unvalidated inputs passed to OS shells or unserialized dynamically.
+8. Path Traversal: Processing file paths from user inputs without directory validation.
+
+For each security issue found, classify it with:
+- Title: Short name of the vulnerability.
+- Description: Explanation of the vulnerability and potential security implications.
+- Line number: The exact 1-based line number where the vulnerability is located, or null if it is global.
+- Severity: low, medium, high, or critical.
+- Category: sql_injection, xss, secrets, auth_flaw, access_control, csrf, insecure_deserialization, command_injection, path_traversal, or other.
+- CWE ID: The corresponding CWE ID (e.g., CWE-89, CWE-79, CWE-798).
+- OWASP Category: The corresponding OWASP category (e.g., A03:2021-Injection, A01:2021-Broken Access Control).
+
+Be highly precise. Do not hallucinate. Only return findings that are present in the submitted code.
+"""
+
+# Security Vulnerability Rule Patterns for Dynamic Static Analysis
+SECURITY_RULES = [
+    {
+        "id": "SECRETS_HARDCODED",
+        "category": "secrets",
+        "severity": "critical",
+        "cwe_id": "CWE-798",
+        "owasp_category": "A07:2021-Identification and Authentication Failures",
+        "title": "Use of Hardcoded API Secret Key or Credentials",
+        "description": "Hardcoded API secret keys or credentials were detected. Hardcoded credentials can be easily extracted from code repositories, leading to unauthorized access. Move credentials to environment variables or a secure key management system.",
+        "patterns": [
+            r"(?i)(api_secret_key|api_key|secret_key|auth_token|access_token|private_key|jwt_secret)\s*[:=]\s*[\"'][^\"']{4,}[\"']",
+            r"(?i)[\"'](xoxb-[a-zA-Z0-9_-]+|sk-[a-zA-Z0-9]{15,}|AKIA[0-9A-Z]{16})[\"']",
+            r"(?i)password\s*[:=]\s*[\"'][^\"']+[\"']",
+        ]
+    },
+    {
+        "id": "SQL_INJECTION",
+        "category": "sql_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-89",
+        "owasp_category": "A03:2021-Injection",
+        "title": "SQL Injection via String Concatenation",
+        "description": "Direct concatenation or formatting of user-provided inputs into SQL query strings enables SQL Injection (SQLi) attacks. An attacker can manipulate the query structure to bypass authorization, leak data, or modify database contents. Use parameterized queries or prepared statements.",
+        "patterns": [
+            r"(?i)(select|insert|update|delete|drop|alter)\s+.*?\s+(from|into|where|set|table)\s+.*?(?:\+|%|f[\"']|\$\{)",
+            r"(?i)(query|sql|stmt)\s*=\s*f[\"'].*?(select|insert|update|delete).*?\{.*?\}[\"']",
+            r"(?i)(query|sql)\s*=\s*[\"'].*?(select|insert|update|delete).*?[\"']\s*\+",
+            r"(?i)execute\(\s*f[\"'].*?[\"']\)",
+            r"(?i)execute\(\s*[\"'].*?[\"']\s*\+",
+            r"(?i)executeQuery\(\s*query\s*\)",
+        ]
+    },
+    {
+        "id": "AUTH_WEAK_HASH",
+        "category": "auth_flaw",
+        "severity": "high",
+        "cwe_id": "CWE-328",
+        "owasp_category": "A02:2021-Cryptographic Failures",
+        "title": "Insecure Cryptographic Hash (MD5/SHA1)",
+        "description": "The MD5 or SHA-1 hashing algorithm is cryptographically broken and prone to collision attacks. It must not be used for security-sensitive hashing or password storage. Use strong adaptive hashing algorithms like bcrypt, Argon2, or PBKDF2.",
+        "patterns": [
+            r"(?i)hashlib\.md5\(",
+            r"(?i)hashlib\.sha1\(",
+            r"(?i)MessageDigest\.getInstance\([\"']MD5[\"']\)",
+            r"(?i)MessageDigest\.getInstance\([\"']SHA-1[\"']\)",
+            r"(?i)CryptoJS\.MD5\(",
+        ]
+    },
+    {
+        "id": "COMMAND_INJECTION",
+        "category": "command_injection",
+        "severity": "critical",
+        "cwe_id": "CWE-78",
+        "owasp_category": "A03:2021-Injection",
+        "title": "OS Command Injection or Unsafe Execution",
+        "description": "Executing command strings constructed with raw concatenation of user-supplied arguments enables OS Command Injection or arbitrary code execution. Attackers can execute arbitrary operating system commands. Use native safe APIs instead.",
+        "patterns": [
+            r"(?i)Runtime\.getRuntime\(\)\.exec\(",
+            r"(?i)os\.system\(",
+            r"(?i)subprocess\.call\(",
+            r"(?i)subprocess\.Popen\(",
+            r"(?i)shell_exec\(",
+            r"(?i)eval\(",
+            r"(?i)exec\(",
+        ]
+    },
+    {
+        "id": "PATH_TRAVERSAL",
+        "category": "path_traversal",
+        "severity": "high",
+        "cwe_id": "CWE-22",
+        "owasp_category": "A01:2021-Broken Access Control",
+        "title": "Potential Path Traversal in File Operations",
+        "description": "Constructing file paths directly from user inputs without validation can lead to path traversal vulnerabilities. Attackers may manipulate path sequences (e.g., '../') to access restricted files. Validate and sanitize file paths before use.",
+        "patterns": [
+            r"(?i)open\(\s*f[\"'].*?\{.*?\}[\"']",
+            r"(?i)new\s+FileInputStream\(\s*.*?\+\s*.*?\)",
+            r"(?i)new\s+File\(\s*.*?\+\s*.*?\)",
+            r"(?i)\.\./\.\.",
+        ]
+    },
+    {
+        "id": "XSS_DOM_INJECTION",
+        "category": "xss",
+        "severity": "high",
+        "cwe_id": "CWE-79",
+        "owasp_category": "A03:2021-Injection",
+        "title": "Cross-Site Scripting (XSS) via Unsanitized DOM Insertion",
+        "description": "Directly assigning user-controlled input to DOM elements without sanitization enables Cross-Site Scripting (XSS). Attackers can execute arbitrary JavaScript in victim browsers. Use proper input sanitization or safe text rendering.",
+        "patterns": [
+            r"(?i)\.innerHTML\s*=",
+            r"(?i)document\.write\(",
+            r"(?i)dangerouslySetInnerHTML",
+            r"(?i)v-html\s*=",
+        ]
+    }
+]
+
+def perform_static_security_scan(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamically analyzes any provided source code line-by-line using rule-based patterns
+    to detect real OWASP Top 10 vulnerabilities with exact 1-based line numbers.
+    """
+    findings = []
+    seen_lines_and_categories = set()
+
+    lines = source_code.split("\n")
+    for line_idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        # Skip pure comment lines
+        if line.startswith("#") or line.startswith("//") or line.startswith("/*") or line.startswith("*"):
+            continue
+
+        for rule in SECURITY_RULES:
+            key = (line_idx, rule["category"])
+            if key in seen_lines_and_categories:
+                continue
+
+            for pattern in rule["patterns"]:
+                if re.search(pattern, raw_line):
+                    findings.append({
+                        "title": rule["title"],
+                        "description": rule["description"],
+                        "line_number": line_idx,
+                        "severity": rule["severity"],
+                        "category": rule["category"],
+                        "cwe_id": rule["cwe_id"],
+                        "owasp_category": rule["owasp_category"]
+                    })
+                    seen_lines_and_categories.add(key)
+                    break
+
+    return findings
+
+def get_mock_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    """
+    Dynamic fallback for security vulnerability scanning when LLM API key is not configured.
+    """
+    return perform_static_security_scan(source_code, language)
+
+def scan_security_vulnerabilities(source_code: str, language: str) -> List[dict]:
+    api_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("INFO: GEMINI_API_KEY not set. Using dynamic static security vulnerability analysis engine.")
+        return perform_static_security_scan(source_code, language)
+
+    try:
+        genai.configure(api_key=api_key)
+        
+        model = genai.GenerativeModel(
+            model_name=settings.llm_model,
+            system_instruction=SYSTEM_PROMPT
+        )
+        
+        prompt = f"Analyze the following {language} code for security vulnerabilities:\n\n{source_code}"
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=SecurityVulnerabilityResult
+            )
+        )
+        
+        # Parse output
+        result = SecurityVulnerabilityResult.model_validate_json(response.text)
+        return [finding.model_dump() for finding in result.findings]
+    except Exception as e:
+        print(f"WARNING: LLM security scan failed or unconfigured ({e}). Falling back to dynamic static security scanner.")
+        return perform_static_security_scan(source_code, language)
+
+

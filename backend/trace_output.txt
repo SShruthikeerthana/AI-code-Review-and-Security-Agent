@@ -1,0 +1,31 @@
+INFO: GEMINI_API_KEY not set. Using dynamic static security vulnerability analysis engine.
+INFO: GEMINI_API_KEY not set. Using dynamic static code quality analysis engine.
+=== SECURITY FINDINGS ===
+[]
+=== QUALITY FINDINGS ===
+[]
+=== MERGED FINDINGS COUNT === 0
+=== REMEDIATION RESULT METADATA ===
+{
+  "original_findings": [],
+  "remaining_findings": [],
+  "fixed_findings": [],
+  "attempts": 0,
+  "validation_passed": true,
+  "all_vulnerabilities_fixed": true,
+  "rescan_passed": true,
+  "original_findings_count": 0,
+  "rescan_findings_count": 0,
+  "fixed_findings_count": 0
+}
+=== CANDIDATE REMEDIATED CODE ===
+d = {"P":"S", "R":"P", "S":"R"}
+
+a, b = input().split()
+
+if a == b:
+    print("D")
+elif d[a] == b:
+    print(b)
+else:
+    print(a)

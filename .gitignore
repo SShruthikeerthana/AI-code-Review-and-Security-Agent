@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+.env*.local
+backend/.env
+
+# Build
+.next/
+out/
+dist/
+build/
+*.egg-info/
+
+# Database
+*.db
+backend/data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ChromaDB / vector store
+backend/data/chroma/
+backend/data/uploads/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/

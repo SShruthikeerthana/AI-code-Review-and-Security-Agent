@@ -1,0 +1,93 @@
+{
+  "findings": [
+    {
+      "title": "Duplicate Code Pattern (Violation of DRY)",
+      "description": "Duplicate statement pattern detected at line 98 (previously seen at line 65). Extract duplicated logic into a shared helper method.",
+      "line_number": 98,
+      "severity": "low",
+      "category": "code_smell",
+      "agent_source": "code_analysis",
+      "id": "f59e9c80-9848-42db-96bc-37a61bf249b2",
+      "remediation_summary": "Refactor code to resolve Duplicate Code Pattern (Violation of DRY) following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing Duplicate Code Pattern (Violation of DRY)\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    },
+    {
+      "title": "High Cyclomatic Complexity & Long Method",
+      "description": "The method 'perform_static_security_scan' spans 30 lines. Long methods violate Single Responsibility Principle (SRP). Refactor into smaller helper functions.",
+      "line_number": 143,
+      "severity": "medium",
+      "category": "complexity",
+      "agent_source": "code_analysis",
+      "id": "62804b6a-8ad6-44c4-9db3-00109ad6800c",
+      "remediation_summary": "Refactor code to resolve High Cyclomatic Complexity & Long Method following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing High Cyclomatic Complexity & Long Method\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    },
+    {
+      "title": "High Cyclomatic Complexity & Long Method",
+      "description": "The method 'scan_security_vulnerabilities' spans 24 lines. Long methods violate Single Responsibility Principle. Refactor into smaller helper functions.",
+      "line_number": 185,
+      "severity": "medium",
+      "category": "complexity",
+      "agent_source": "code_analysis",
+      "id": "fd9a959d-b993-4d75-b54a-1e51f95e94a3",
+      "remediation_summary": "Refactor code to resolve High Cyclomatic Complexity & Long Method following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing High Cyclomatic Complexity & Long Method\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    },
+    {
+      "title": "Duplicate Code Pattern (Violation of DRY)",
+      "description": "Duplicate statement pattern detected at line 189 (previously seen at line 183). Extract duplicated logic into a shared helper method.",
+      "line_number": 189,
+      "severity": "low",
+      "category": "code_smell",
+      "agent_source": "code_analysis",
+      "id": "969a5d4c-5ae5-41dc-bdfd-36ced8156d2c",
+      "remediation_summary": "Refactor code to resolve Duplicate Code Pattern (Violation of DRY) following standard secure coding rules.",
+      "corrected_code": "# Refactored implementation addressing Duplicate Code Pattern (Violation of DRY)\n# Ensure strict input validation and boundary checks",
+      "best_practice_explanation": "Follow standard software architecture guidelines, modular design principles, and OWASP Top 10 security standards."
+    }
+  ],
+  "remediation": {
+    "rescan_passed": true,
+    "remediation_status": "success",
+    "security_remediation_required": true,
+    "remediation_error": null,
+    "original_findings_count": 4,
+    "rescan_findings_count": 0,
+    "fixed_findings_count": 4,
+    "fixed_findings": [],
+    "remaining_findings": [
+      {
+        "title": "High Cyclomatic Complexity & Long Method",
+        "description": "The method 'perform_static_security_scan' spans 30 lines. Long methods violate Single Responsibility Principle (SRP). Refactor into smaller helper functions.",
+        "line_number": 143,
+        "severity": "medium",
+        "category": "complexity"
+      },
+      {
+        "title": "High Cyclomatic Complexity & Long Method",
+        "description": "The method 'scan_security_vulnerabilities' spans 24 lines. Long methods violate Single Responsibility Principle. Refactor into smaller helper functions.",
+        "line_number": 185,
+        "severity": "medium",
+        "category": "complexity"
+      },
+      {
+        "title": "Duplicate Code Pattern (Violation of DRY)",
+        "description": "Duplicate statement pattern detected at line 98 (previously seen at line 65). Extract duplicated logic into a shared helper method.",
+        "line_number": 98,
+        "severity": "low",
+        "category": "code_smell"
+      },
+      {
+        "title": "Duplicate Code Pattern (Violation of DRY)",
+        "description": "Duplicate statement pattern detected at line 189 (previously seen at line 183). Extract duplicated logic into a shared helper method.",
+        "line_number": 189,
+        "severity": "low",
+        "category": "code_smell"
+      }
+    ],
+    "attempts": 3
+  }
+}

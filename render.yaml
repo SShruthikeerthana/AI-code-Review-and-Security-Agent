@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: ai-code-review-backend
+    env: python
+    plan: free
+    rootDir: backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0 # Standardize python version on Render
+      - key: GEMINI_API_KEY
+        value: "PASTE_YOUR_AQ_OR_AIZASY_KEY_HERE"
+      - key: XAI_API_KEY
+        value: "PASTE_YOUR_GROQ_API_KEY_HERE"
+      - key: LLM_MODEL
+        value: "gemini-flash-latest" # auto-tracking alias; gemini-1.5/2.0 models are RETIRED (404)
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: GITHUB_CLIENT_ID
+        value: "Ov23li69B2Bo9wxtBgvb"
+      - key: GITHUB_CLIENT_SECRET
+        value: "d7dccdef0c2a3444835ab291e6e7a0efd2a15a1e"
+      - key: GITHUB_REDIRECT_URI
+        value: "https://ai-code-review-frontend-ctu0.onrender.com"
+
+  - type: web
+    name: ai-code-review-frontend
+    env: node
+    plan: free
+    rootDir: frontend
+    buildCommand: "npm install && npm run build"
+    startCommand: "npm run start"
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: "https://ai-code-review-backend-6ut3.onrender.com"
