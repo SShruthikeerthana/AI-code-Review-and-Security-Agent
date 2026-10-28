@@ -1,4 +1,4 @@
-# Development of Smart Code Inspection Platform with Vulnerability Detection System Group 2
+# Development of Smart Code Inspection Platform with Vulnerability Detection System
 
 An intelligent multi-agent platform that automatically analyzes Python and Java source code for quality issues, OWASP Top 10 security vulnerabilities, and best-practice violations — featuring a RAG-powered Conversational Code Assistant and exportable review reports.
 
